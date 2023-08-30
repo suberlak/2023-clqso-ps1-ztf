@@ -903,6 +903,8 @@ def plot_averaged_data(
     suffix="",
     mjds=[],
     ylims=None,
+    return_axis = False,
+    invert_yaxis = True
 ):
     """A function to plot the day-averaged data
 
@@ -1019,13 +1021,15 @@ def plot_averaged_data(
     ax.set_title(f"Light curve {name} r-band")
 
     # invert y-axis because smaller value of magnitude means brighter object
-    ax.invert_yaxis()
+    
     if ylims is not None:
         ax.set_ylim(ylims)
     name = data["SDSS_JID"][:5]
 
     if plot_flagged:
         suffix = "with_flagged"
+    if invert_yaxis:
+        ax.invert_yaxis()
     fname = f"sdss_ztf_ps1_{name}_combined_{suffix}.png"
     plt.savefig(
         fname,
@@ -1034,3 +1038,6 @@ def plot_averaged_data(
         facecolor="white",
     )
     print(f"Saved as {fname} in {os.getcwd()}")
+    
+    if return_axis:
+        return ax
