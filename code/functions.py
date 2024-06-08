@@ -1041,3 +1041,106 @@ def plot_averaged_data(
     
     if return_axis:
         return ax
+
+    
+def load_ps1_sdss_data(dbId, sdss_dr_path, ps1_dr_path, filter_select='r'):
+    """Quick function to get SDSS and PS1 light curve """
+
+    # create a dictionary to load the data for a particular light curve 
+    data= {}
+    data["filter_select"] = filter_select
+    data["dbId"] = dbId
+
+    # read in the SDSS light curve
+    sdss_lc_path = os.path.join(sdss_dr_path, str(dbId))
+    print(f"Reading {sdss_lc_path}")
+    sdss_lc = Table.read(sdss_lc_path, format="ascii")
+
+    col_start = {'u':1,'g':4,'r': 7, 'i':10, 'z':13}
+    colnum = col_start[filter_select] 
+    # given the file structure explained in
+    # https://faculty.washington.edu/ivezic/macleod/qso_dr7/Southern_format_LC.html
+    # rename the relevant columns  and do not keep the filter name
+    # in the column name, i.e. mag rather than mag_r ,
+    # given that for all surveys we are only  selecting (for now) data in r-band
+
+     # r-band mjd, mag, magerr are cols 7,8,9
+    old_names = [f"col{colnum}", f"col{colnum+1}", f"col{colnum+2}"] 
+    new_names = ["mjd", "mag", "magerr"]
+    sdss_lc.rename_columns(old_names, new_names)
+    sdss_lc_select = sdss_lc[new_names]
+
+    # -99 means missing data - ignore those
+    mask = sdss_lc_select["mag"] > 0
+    if np.sum(mask) >0:
+        # store in a dictionary
+        data["sdss"] = sdss_lc_select[mask]
+        print(f"Loaded {np.sum(mask)} epochs in SDSS {filter_select}-band")
+    else:
+        print(f"There is no SDSS data  for {dbId} in {filter_select}")
+
+    dbId_str  = str(dbId) 
+    # Here we assume a format for ps1 files that starts with dbId 
+    ps1_fnames = os.listdir(ps1_dr_path)
+    ps1_fname = [f for f in ps1_fnames if f.startswith(dbId_str)][0]
+    print(f'\nReading {ps1_fname}')
+    ps1_file_path = os.path.join(ps1_dr_path, ps1_fname) 
+
+
+    ps1 = Table.read(ps1_file_path, format='csv')
+
+    # convert  flux to magnitudes 
+    ps1['mag'] = flux2ab(ps1['psfFlux'])
+    ps1['magerr'] = flux2absigma(ps1['psfFlux'], ps1['psfFluxErr'])
+
+    # rename obsTime to mjd
+    ps1.rename_column("obsTime", "mjd")
+    
+    # PS1 filter definitions 
+    # https://ui.adsabs.harvard.edu/abs/2012ApJ...750...99T/abstract 
+    # https://outerspace.stsci.edu/display/PANSTARRS/PS1+Filter+properties
+    ps1_filter_dic = {'g':1, 'r':2, 'i':3, 'z':4, 'y':5 }
+    if filter_select not in ps1_filter_dic.keys():
+        print('Selected filter not available for PS1')
+        print('Choose from ', ps1_filter_dic.keys())
+    else:
+        filterId = ps1_filter_dic[filter_select]
+        mask_filter = ps1['filterID'] == filterId
+        # just in case query radius was too large
+        # select only those objects that are within 3 arcsec from the query ra,dec 
+        mask_distance  = ps1['distance']*3600 < 3 
+        mask = mask_filter * mask_distance 
+        if np.sum(mask) > 0:
+            
+             ps1_select = ps1[mask]["mjd", "mag", "magerr",]
+             data['ps1'] = ps1_select 
+             print(f"Loaded {np.sum(mask)} epochs in PS1 {filter_select}-band")
+        else:
+            print(f'There is no data for PS1 in {filter_select}')
+
+    return data
+
+def plot_sdss_ps1_data(data):
+    colors={"sdss": "#1f77b4", "ps1": "#2ca02c", "ztf_synthetic": "#9467bd"}
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4), dpi=150, facecolor="w")
+    for survey in ['sdss','ps1']:
+        lc = data[survey]
+        points = ax.errorbar(lc["mjd"],lc["mag"], yerr=lc["magerr"], fmt="o",
+                markersize=2, alpha=0.6, capsize=3,
+                label=survey.upper(), color=colors[survey],
+            )
+    ax.set_xlabel("Time (MJD)", fontsize=18, labelpad=12)
+    ax.set_ylabel("Magnitude", fontsize=18, labelpad=12)
+    ax.tick_params(direction="in", pad=5, labelsize=13)
+    ax.legend(
+        fontsize=16,
+        markerscale=3,
+    )
+    name = data["dbId"]
+    ax.set_title(f"Quasar SDSS DR7 dbId {name}, r-band")
+
+    # invert y-axis because smaller value of magnitude means brighter object
+    ax.invert_yaxis()
+    
+    
