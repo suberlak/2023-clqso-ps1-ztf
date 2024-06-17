@@ -321,20 +321,18 @@ def apply_wavelength_solution(
     return obj_wave
 
 
-def get_ZTF_DR_lc(name, ra, dec, band, dr_path, keep_all_columns=False):
+def get_ZTF_lc(fname, ra, dec, band, dr_path):
     """
-    Author: Paula Sánchez Sáez, PhD
-
-    Function to dowload an individual ZTF light curve using the ZTF API.
-    For more details about ZTF service, go to their documentation:
-    https://irsa.ipac.caltech.edu/data/ZTF/docs/releases/dr08/ztf_release_notes_dr08.pdf
+    Download an individual ZTF light curve using the ZTF API,
+    see notes at eg.
+    https://irsa.ipac.caltech.edu/data/ZTF/docs/releases/dr21/ztf_release_notes_dr21.pdf
+    df
     See section "iii. Querying Lightcurves using the API."
 
     Parameters:
     -----------
-    name: str
-        Object name (e.g. the object "SDSS J005132.94+180120.5" should be
-        refered here only by "J005132.94+180120.5")
+    fname:  str
+        The name of the file to use for saving the light curve 
     ra: float
         Right ascension of the object (in degrees).
     dec: float
@@ -343,30 +341,15 @@ def get_ZTF_DR_lc(name, ra, dec, band, dr_path, keep_all_columns=False):
         ZTF photometric band.
     dr_path: str
         Path to the download directory.
-    keep_all_columns: bool, default=False
-        If False, only the most important light curve parameters will be retrieved.
-        Otherwise, keep all the columns.
 
-    Returns:
-    --------
-    df: pd.DataFrame
-        DataFrame containing the measurments of the retrieved light curve.
     """
 
-    # make up a convenient filename
-    fname = f"{name}_ZTF_{band}.csv"
-
-    # don't download if the file already exists
-    if os.path.exists(fname):
-        print(f"File {fname} already exists")
-
-    else:
-        file_path = os.path.join(dr_path, fname)
-        irsa_path = "https://irsa.ipac.caltech.edu/cgi-bin/ZTF/nph_light_curves"
-        url = f"{irsa_path}?POS=CIRCLE {ra} {dec} 0.000277778&BANDNAME={band}&FORMAT=csv&NOBS_MIN=3"
-        cmd = f"wget -O {file_path} " + f'"{url}"'
-        print(cmd)
-        os.system(cmd)
+    file_path = os.path.join(dr_path, fname)
+    irsa_path = "https://irsa.ipac.caltech.edu/cgi-bin/ZTF/nph_light_curves"
+    url = f"{irsa_path}?POS=CIRCLE {ra} {dec} 0.000277778&BANDNAME={band}&FORMAT=csv&NOBS_MIN=3"
+    cmd = f"wget -O {file_path} " + f'"{url}"'
+    print(cmd)
+    os.system(cmd)
 
 
 def flux2absigma(flux, fluxsigma):
@@ -1041,94 +1024,142 @@ def plot_averaged_data(
     
     if return_axis:
         return ax
-
+def mask_flares(mag, Nsigma = 5):
+    '''Quick function to mask away flares based 
+    on excessive departure in magnitude space
     
-def load_ps1_sdss_data(dbId, sdss_dr_path, ps1_dr_path, filter_select='r'):
-    """Quick function to get SDSS and PS1 light curve """
+    Parameters:
+    -------
+    mag: magnitudes array
+    
+    Returns:
+    --------
+    mask: a numpy array that is True for 
+        measurements departing more than N-sigma
+        from the median
+        
+    '''
+
+    sigmaGmag = 0.7413 * (np.percentile(mag, 75) - np.percentile(mag, 25))
+    mask = np.abs(np.ma.median(mag) - mag) > Nsigma * sigmaGmag
+    return mask
+                
+    
+def load_survey_data(dbId, sdss_dr_path, ps1_dr_path=None,  
+                           ztf_dr_path=None, filter_select='r'):
+    """Quick function to get SDSS, PS1 and ZTF light curve """
 
     # create a dictionary to load the data for a particular light curve 
     data= {}
     data["filter_select"] = filter_select
     data["dbId"] = dbId
-
-    # read in the SDSS light curve
-    sdss_lc_path = os.path.join(sdss_dr_path, str(dbId))
-    print(f"Reading {sdss_lc_path}")
-    sdss_lc = Table.read(sdss_lc_path, format="ascii")
-
-    col_start = {'u':1,'g':4,'r': 7, 'i':10, 'z':13}
-    colnum = col_start[filter_select] 
-    # given the file structure explained in
-    # https://faculty.washington.edu/ivezic/macleod/qso_dr7/Southern_format_LC.html
-    # rename the relevant columns  and do not keep the filter name
-    # in the column name, i.e. mag rather than mag_r ,
-    # given that for all surveys we are only  selecting (for now) data in r-band
-
-     # r-band mjd, mag, magerr are cols 7,8,9
-    old_names = [f"col{colnum}", f"col{colnum+1}", f"col{colnum+2}"] 
-    new_names = ["mjd", "mag", "magerr"]
-    sdss_lc.rename_columns(old_names, new_names)
-    sdss_lc_select = sdss_lc[new_names]
-
-    # -99 means missing data - ignore those
-    mask = sdss_lc_select["mag"] > 0
-    if np.sum(mask) >0:
-        # store in a dictionary
-        data["sdss"] = sdss_lc_select[mask]
-        print(f"Loaded {np.sum(mask)} epochs in SDSS {filter_select}-band")
-    else:
-        print(f"There is no SDSS data  for {dbId} in {filter_select}")
-
-    dbId_str  = str(dbId) 
-    # Here we assume a format for ps1 files that starts with dbId 
-    ps1_fnames = os.listdir(ps1_dr_path)
-    ps1_fname = [f for f in ps1_fnames if f.startswith(dbId_str)][0]
-    print(f'\nReading {ps1_fname}')
-    ps1_file_path = os.path.join(ps1_dr_path, ps1_fname) 
-
-
-    ps1 = Table.read(ps1_file_path, format='csv')
-
-    # convert  flux to magnitudes 
-    ps1['mag'] = flux2ab(ps1['psfFlux'])
-    ps1['magerr'] = flux2absigma(ps1['psfFlux'], ps1['psfFluxErr'])
-
-    # rename obsTime to mjd
-    ps1.rename_column("obsTime", "mjd")
     
-    # PS1 filter definitions 
-    # https://ui.adsabs.harvard.edu/abs/2012ApJ...750...99T/abstract 
-    # https://outerspace.stsci.edu/display/PANSTARRS/PS1+Filter+properties
-    ps1_filter_dic = {'g':1, 'r':2, 'i':3, 'z':4, 'y':5 }
-    if filter_select not in ps1_filter_dic.keys():
-        print('Selected filter not available for PS1')
-        print('Choose from ', ps1_filter_dic.keys())
-    else:
-        filterId = ps1_filter_dic[filter_select]
-        mask_filter = ps1['filterID'] == filterId
-        # just in case query radius was too large
-        # select only those objects that are within 3 arcsec from the query ra,dec 
-        mask_distance  = ps1['distance']*3600 < 3 
-        mask = mask_filter * mask_distance 
-        if np.sum(mask) > 0:
-            
-             ps1_select = ps1[mask]["mjd", "mag", "magerr",]
-             data['ps1'] = ps1_select 
-             print(f"Loaded {np.sum(mask)} epochs in PS1 {filter_select}-band")
-        else:
-            print(f'There is no data for PS1 in {filter_select}')
+    # store which surveys contain data 
+    data['surveys'] = []
+    dbId_str  = str(dbId) 
+    
+    if sdss_dr_path is not None:
+        # read in the SDSS light curve
+        sdss_lc_path = os.path.join(sdss_dr_path, dbId_str)
+        print(f"Reading {sdss_lc_path}")
+        sdss_lc = Table.read(sdss_lc_path, format="ascii")
 
+        col_start = {'u':1,'g':4,'r': 7, 'i':10, 'z':13}
+        colnum = col_start[filter_select] 
+        # given the file structure explained in
+        # https://faculty.washington.edu/ivezic/macleod/qso_dr7/Southern_format_LC.html
+        # rename the relevant columns  and do not keep the filter name
+        # in the column name, i.e. mag rather than mag_r ,
+        # given that for all surveys we are only  selecting (for now) data in r-band
+
+         # r-band mjd, mag, magerr are cols 7,8,9
+        old_names = [f"col{colnum}", f"col{colnum+1}", f"col{colnum+2}"] 
+        new_names = ["mjd", "mag", "magerr"]
+        sdss_lc.rename_columns(old_names, new_names)
+        sdss_lc_select = sdss_lc[new_names]
+
+        # -99 means missing data - ignore those
+        mask = sdss_lc_select["mag"] > 0
+        if np.sum(mask) >0:
+            # store in a dictionary
+            data["sdss"] = sdss_lc_select[mask]
+            print(f"Loaded {np.sum(mask)} epochs in SDSS {filter_select}-band")
+            data['surveys'].append('sdss')
+        else:
+            print(f"There is no SDSS data  for {dbId} in {filter_select}")
+
+    if ps1_dr_path is not None:
+        # Here we assume a format for ps1 files that starts with dbId 
+        ps1_fnames = os.listdir(ps1_dr_path)
+        ps1_fname = [f for f in ps1_fnames if f.startswith(dbId_str)][0]
+        print(f'\nReading {ps1_fname}')
+        ps1_file_path = os.path.join(ps1_dr_path, ps1_fname) 
+
+
+        ps1 = Table.read(ps1_file_path, format='csv')
+
+        # convert  flux to magnitudes 
+        ps1['mag'] = flux2ab(ps1['psfFlux'])
+        ps1['magerr'] = flux2absigma(ps1['psfFlux'], ps1['psfFluxErr'])
+
+        # rename obsTime to mjd
+        ps1.rename_column("obsTime", "mjd")
+
+        # PS1 filter definitions 
+        # https://ui.adsabs.harvard.edu/abs/2012ApJ...750...99T/abstract 
+        # https://outerspace.stsci.edu/display/PANSTARRS/PS1+Filter+properties
+        ps1_filter_dic = {'g':1, 'r':2, 'i':3, 'z':4, 'y':5 }
+        if filter_select not in ps1_filter_dic.keys():
+            print('Selected filter not available for PS1')
+            print('Choose from ', ps1_filter_dic.keys())
+        else:
+            filterId = ps1_filter_dic[filter_select]
+            mask_filter = ps1['filterID'] == filterId
+            
+         
+        
+            # just in case query radius was too large
+            # select only those objects that are within 3 arcsec from the query ra,dec 
+            mask_distance  = ps1['distance']*3600 < 3 
+            mask = mask_filter * mask_distance 
+
+            if np.sum(mask) > 0:
+                 ps1_select = ps1[mask]["mjd", "mag", "magerr",]
+                    
+                 # perform 5 sigma clipping to remove flares
+                 select_not_flares = ~mask_flares(ps1_select['mag'])
+                    
+                 data['ps1'] = ps1_select[select_not_flares] 
+                 print(f"Loaded {np.sum(mask)} epochs in PS1 {filter_select}-band")
+                 data['surveys'].append('ps1')
+            else:
+                print(f'There is no data for PS1 in {filter_select}')
+    if ztf_dr_path is not None:
+        ztf_fnames = os.listdir(ztf_dr_path)
+        ztf_fname = [f for f in ztf_fnames if f.startswith(dbId_str)][0]
+        print(f'\nReading {ztf_fname}')
+        ztf_file_path = os.path.join(ztf_dr_path, ztf_fname) 
+        ztf = Table.read(ztf_file_path, format='csv')
+        if len(ztf)>3:
+            # Perform the 5 sigma clipping 
+            select_not_flares = ~mask_flares(ztf['mag'])
+            data['ztf'] = ztf[select_not_flares]
+            print(f"Loaded {len(ztf)} epochs in ZTF {filter_select}-band")
+            data['surveys'].append('ztf')
+        else:
+            print(f'There is no data for ZTF in {filter_select}')
+    
     return data
 
-def plot_sdss_ps1_data(data):
-    colors={"sdss": "#1f77b4", "ps1": "#2ca02c", "ztf_synthetic": "#9467bd"}
+def plot_survey_data(data):
+    colors={"sdss": "#1f77b4", "ps1": "#2ca02c", "ztf": "#9467bd"}
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 4), dpi=150, facecolor="w")
-    for survey in ['sdss','ps1']:
+    for survey in data['surveys']:
         lc = data[survey]
         points = ax.errorbar(lc["mjd"],lc["mag"], yerr=lc["magerr"], fmt="o",
                 markersize=2, alpha=0.6, capsize=3,
-                label=survey.upper(), color=colors[survey],
+                label=f'{survey.upper()} r-band', color=colors[survey],
             )
     ax.set_xlabel("Time (MJD)", fontsize=18, labelpad=12)
     ax.set_ylabel("Magnitude", fontsize=18, labelpad=12)
@@ -1138,7 +1169,7 @@ def plot_sdss_ps1_data(data):
         markerscale=3,
     )
     name = data["dbId"]
-    ax.set_title(f"Quasar SDSS DR7 dbId {name}, r-band")
+    ax.set_title(f"Quasar SDSS DR7 dbId {name}")
 
     # invert y-axis because smaller value of magnitude means brighter object
     ax.invert_yaxis()
